@@ -151,53 +151,86 @@ print(fixed_variable.tag.test_value)
 
 #--------------------------------------------#
 # Best: Bayesian Estimation Supersedes T-test
-A = np.random.normal(30, 4, size=1000)
-B = np.random.normal(26, 7, size=1000)
+drug = (101,100,102,104,102,97,105,105,98,101,100,123,105,103,100,95,102,106,
+        109,102,82,102,100,102,102,101,102,102,103,103,97,97,103,101,97,104,
+        96,103,124,101,101,100,101,101,104,100,101)
+placebo = (99,101,100,101,102,100,97,101,104,101,102,102,100,105,88,101,100,
+           104,100,100,100,101,102,103,97,101,101,100,101,99,101,100,100,
+           101,100,99,101,100,102,99,100,99)
+
+y1 = np.array(drug)
+y2 = np.array(placebo)
+print(y1.mean(), y2.mean())
 
 # Prior
+# 만약 mu_A, mu_B에 대한 사전 지식이 없다면 무정보 사전 분포를 정의하는 것이 좋음
 # 1) mu_A, mu_B Prior: 정규 분포
 # 2) std_A, std_B Prior: 균일 분포
 # 3) nu_minus_1: 자유도 v의 분포: 이동된 지수 분포
-pooled_mean = np.r_[A, B].mean()
-pooled_std = np.r_[A, B].std()
-
-# 만약 mu_A, mu_B에 대한 사전 지식이 없다면 무정보 사전 분포를 정의하는 것이 좋음
-# 정규 분포의 표준 편차에 1000 같은 큰 숫자를 곱해주자.
-# 표준편차 역시 Lower, Upper Bound를 크게 해주자.
-tau = 1 / (1000*pooled_std**2)    # Precision Parameter
+pooled_mean = np.r_[y1, y2].mean()
+pooled_std = np.r_[y1, y2].std() * 2
 
 with pm.Model() as model:
-    mu_A = pm.Normal("mu_A", pooled_mean, tau)
-    mu_B = pm.Normal("mu_B", pooled_mean, tau)
-    std_A = pm.Uniform("std_A", pooled_std/1000, 1000*pooled_std)
-    std_B = pm.Uniform("std_B", pooled_std/1000, 1000*pooled_std)
-    nu_minus_1 = pm.Exponential("nu_1", 1/29)
+    # Prior
+    group1_mean = pm.Normal("group1_mean", mu=pooled_mean, sd=pooled_std)
+    group2_mean = pm.Normal("group2_mean", mu=pooled_mean, sd=pooled_std)
+    group1_std = pm.Uniform('group1_std', lower=1, upper=10)
+    group2_std = pm.Uniform('group2_std', lower=1, upper=10)
+    nu = pm.Exponential("nu_minus_one", 1/29) + 1
 
     # Likelihood: Noncentral T-distribution
-    obs_A = pm.distributions.continuous.StudentT("obs_A", observed=A, nu=nu_minus_1 + 1, mu=mu_A, lam=1 / std_A ** 2)
-    obs_B = pm.distributions.continuous.StudentT("obs_B", observed=B, nu=nu_minus_1 + 1, mu=mu_B, lam=1 / std_B ** 2)
+    # Lambda
+    lambda_1 = group1_std ** -2
+    lambda_2 = group2_std ** -2
+
+    # Likelihood
+    group1 = pm.StudentT("drug", nu=nu, mu=group1_mean, lam=lambda_1, observed=y1)
+    group2 = pm.StudentT("placebo", nu=nu, mu=group2_mean, lam=lambda_2, observed=y2)
+
+# Estimation
+with model:
+    diff_of_means = pm.Deterministic('difference of means', group1_mean - group2_mean)
+    diff_of_stds = pm.Deterministic('difference of stds', group1_std - group2_std)
+    effect_size = pm.Deterministic('effect size',
+                                   diff_of_means / np.sqrt((group1_std**2 + group2_std**2) / 2))
+
+# Check Model Initialization
+model.check_test_point()
+# Model Graphs
+pm.model_to_graphviz(model)
+
+# pm.kdeplot(np.random.exponential(30, size=10000), fill_kwargs={'alpha': 0.5})
+
+with model:
+    # Prior
+    # prior = pm.sample_prior_predictive(500)
 
     # MCMC
-    step = pm.Metropolis([obs_A, obs_B, mu_A, mu_B, std_A, std_B, nu_minus_1])
-    trace = pm.sample(draws=20000, step=step)
+    step = pm.Metropolis()
+
+    # Posterior
+    # start = pm.find_MAP()
+    trace = pm.sample(draws=20000, step=step, progressbar=True)
     burned_trace = trace[10000:]
 
+pm.plot_posterior(burned_trace,
+                  var_names=['group1_mean','group2_mean', 'group1_std', 'group2_std', 'nu_minus_one'])
+
+pm.plot_posterior(trace, var_names=['difference of means','difference of stds', 'effect size'],
+                  ref_val=0, color='#87ceeb')
+
+pm.summary(burned_trace, var_names=['group1_mean','group2_mean'])
+pm.summary(burned_trace, var_names=['difference of means','difference of stds', 'effect size'])
 trace_df = pm.trace_to_dataframe(burned_trace)
+mu_A_trace = trace_df["group1_mean"]
+mu_B_trace = trace_df["group2_mean"]
 
-# Result
-mu_A_trace = trace_df["mu_A"].values
-mu_B_trace = trace_df["mu_B"].values
-std_A_trace = trace_df["std_A"].values
-std_B_trace = trace_df["std_A"].values #[:]: trace object => ndarray
-nu_trace = trace_df["nu_1"].values + 1
+def trace_hist(data, label, **kwargs):
+    return plt.hist(data, bins=40, histtype="stepfilled", alpha=.95, label=label, **kwargs)
 
-
-def _hist(data,label,**kwargs):
-    return plt.hist(data,bins=40,histtype="stepfilled",alpha=.95,label=label, **kwargs)
-
-ax = plt.subplot(3,1,1)
-_hist(mu_A_trace,"A")
-_hist(mu_B_trace,"B")
+ax = plt.subplot(2, 1, 1)
+trace_hist(mu_A_trace, "A")
+trace_hist(mu_B_trace, "B")
 plt.legend ()
 plt.title("Posterior distributions of $\mu$")
 
