@@ -1,4 +1,4 @@
-# 프로그래머를 위한 베이지안 with 파이썬
+# Bayesian Coding Python
 import numpy as np
 import scipy
 import scipy.stats as stats
@@ -7,6 +7,91 @@ import theano.tensor as tt
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# Best: Bayesian Estimation Supersedes T-test
+drug = (101,100,102,104,102,97,105,105,98,101,100,123,105,103,100,95,102,106,
+        109,102,82,102,100,102,102,101,102,102,103,103,97,97,103,101,97,104,
+        96,103,124,101,101,100,101,101,104,100,101)
+placebo = (99,101,100,101,102,100,97,101,104,101,102,102,100,105,88,101,100,
+           104,100,100,100,101,102,103,97,101,101,100,101,99,101,100,100,
+           101,100,99,101,100,102,99,100,99)
+
+y1 = np.array(drug)
+y2 = np.array(placebo)
+print(y1.mean(), y2.mean())
+
+# Prior
+# 만약 mu_A, mu_B에 대한 사전 지식이 없다면 무정보 사전 분포를 정의하는 것이 좋음
+# 1) mu_A, mu_B Prior: 정규 분포
+# 2) std_A, std_B Prior: 균일 분포
+# 3) nu_minus_1: 자유도 v의 분포: 이동된 지수 분포
+pooled_mean = np.r_[y1, y2].mean()
+pooled_std = np.r_[y1, y2].std() * 2
+
+with pm.Model() as model:
+    # Prior
+    group1_mean = pm.Normal("group1_mean", mu=pooled_mean, sd=pooled_std)
+    group2_mean = pm.Normal("group2_mean", mu=pooled_mean, sd=pooled_std)
+    group1_std = pm.Uniform('group1_std', lower=1, upper=10)
+    group2_std = pm.Uniform('group2_std', lower=1, upper=10)
+    nu = pm.Exponential("nu_minus_one", 1/29) + 1
+
+    # Likelihood: Noncentral T-distribution
+    # Lambda
+    lambda_1 = group1_std ** -2
+    lambda_2 = group2_std ** -2
+
+    # Likelihood
+    group1 = pm.StudentT("drug", nu=nu, mu=group1_mean, lam=lambda_1, observed=y1)
+    group2 = pm.StudentT("placebo", nu=nu, mu=group2_mean, lam=lambda_2, observed=y2)
+
+# Estimation
+with model:
+    diff_of_means = pm.Deterministic('difference of means', group1_mean - group2_mean)
+    diff_of_stds = pm.Deterministic('difference of stds', group1_std - group2_std)
+    effect_size = pm.Deterministic('effect size',
+                                   diff_of_means / np.sqrt((group1_std**2 + group2_std**2) / 2))
+
+# Check Model Initialization
+model.check_test_point()
+# Model Graphs
+pm.model_to_graphviz(model)
+
+# pm.kdeplot(np.random.exponential(30, size=10000), fill_kwargs={'alpha': 0.5})
+
+with model:
+    # Prior
+    # prior = pm.sample_prior_predictive(500)
+
+    # MCMC
+    step = pm.Metropolis()
+
+    # Posterior
+    # start = pm.find_MAP()
+    trace = pm.sample(draws=20000, step=step, progressbar=True)
+    burned_trace = trace[10000:]
+
+pm.plot_posterior(burned_trace,
+                  var_names=['group1_mean','group2_mean', 'group1_std', 'group2_std', 'nu_minus_one'])
+
+pm.plot_posterior(trace, var_names=['difference of means','difference of stds', 'effect size'],
+                  ref_val=0, color='#87ceeb')
+
+pm.summary(burned_trace, var_names=['group1_mean','group2_mean'])
+pm.summary(burned_trace, var_names=['difference of means','difference of stds', 'effect size'])
+trace_df = pm.trace_to_dataframe(burned_trace)
+mu_A_trace = trace_df["group1_mean"]
+mu_B_trace = trace_df["group2_mean"]
+
+def trace_hist(data, label, **kwargs):
+    return plt.hist(data, bins=40, histtype="stepfilled", alpha=.95, label=label, **kwargs)
+
+ax = plt.subplot(2, 1, 1)
+trace_hist(mu_A_trace, "A")
+trace_hist(mu_B_trace, "B")
+plt.legend ()
+plt.title("Posterior distributions of $\mu$")
+#--------------------------------------------#
+# 프로그래머를 위한 베이지안 with 파이썬
 # Chapter1: 베이지안 추론의 철학
 # 1.4. 컴퓨터를 사용하여 베이지안 추론하기
 count_data = np.loadtxt("data/txtdata.csv")
@@ -144,94 +229,47 @@ with model:
 print(fixed_variable.tag.test_value)
 
 
-
-
-
-
-
-#--------------------------------------------#
-# Best: Bayesian Estimation Supersedes T-test
-drug = (101,100,102,104,102,97,105,105,98,101,100,123,105,103,100,95,102,106,
-        109,102,82,102,100,102,102,101,102,102,103,103,97,97,103,101,97,104,
-        96,103,124,101,101,100,101,101,104,100,101)
-placebo = (99,101,100,101,102,100,97,101,104,101,102,102,100,105,88,101,100,
-           104,100,100,100,101,102,103,97,101,101,100,101,99,101,100,100,
-           101,100,99,101,100,102,99,100,99)
-
-y1 = np.array(drug)
-y2 = np.array(placebo)
-print(y1.mean(), y2.mean())
-
-# Prior
-# 만약 mu_A, mu_B에 대한 사전 지식이 없다면 무정보 사전 분포를 정의하는 것이 좋음
-# 1) mu_A, mu_B Prior: 정규 분포
-# 2) std_A, std_B Prior: 균일 분포
-# 3) nu_minus_1: 자유도 v의 분포: 이동된 지수 분포
-pooled_mean = np.r_[y1, y2].mean()
-pooled_std = np.r_[y1, y2].std() * 2
-
+# 2.2. 모델링 방법
+# 예제: 거짓말에 대한 알고리즘
+# p = 부정행위자의 비율, 갖고 있는 정보가 없으므로 Prior로 Uniform 분포를 부여함
+# N: 학생 수, X: 부정행위에 대해 "예"라고 답변한 학생의 수
+# 1: 부정행위를 함, 0: 아무 짓도 하지 않음
+# 동전던지기: 1: 앞면, 0: 뒷면
+N = 100
+X = 35
 with pm.Model() as model:
     # Prior
-    group1_mean = pm.Normal("group1_mean", mu=pooled_mean, sd=pooled_std)
-    group2_mean = pm.Normal("group2_mean", mu=pooled_mean, sd=pooled_std)
-    group1_std = pm.Uniform('group1_std', lower=1, upper=10)
-    group2_std = pm.Uniform('group2_std', lower=1, upper=10)
-    nu = pm.Exponential("nu_minus_one", 1/29) + 1
+    p = pm.Uniform("p", 0, 1)
+    true_answers = pm.Bernoulli("true_answers", p, shape=N, testval=np.random.binomial(1, 0.5, N))
+    first_flips = pm.Bernoulli("first_flips", 0.5, shape=N, testval=np.random.binomial(1, 0.5, N))
+    # 모두가 2번째 동전을 던지는 것은 아니지만 그래도 똑같이 세팅한다.
+    second_flips = pm.Bernoulli("second_flips", 0.5, shape=N, testval=np.random.binomial(1, 0.5, N))
 
-    # Likelihood: Noncentral T-distribution
-    # Lambda
-    lambda_1 = group1_std ** -2
-    lambda_2 = group2_std ** -2
+    # 부정행위를 했다는 답변이 관측된 비율의 결과 추정치
+    val = first_flips*true_answers + (1-first_flips)*second_flips
+    observed_proportion = pm.Deterministic(name="observed_proportion",
+                                           var=tt.sum(val)/float(N), model=model)
+    print("observed_proportion: ", np.round(observed_proportion.tag.test_value, 2))
 
     # Likelihood
-    group1 = pm.StudentT("drug", nu=nu, mu=group1_mean, lam=lambda_1, observed=y1)
-    group2 = pm.StudentT("placebo", nu=nu, mu=group2_mean, lam=lambda_2, observed=y2)
-
-# Estimation
-with model:
-    diff_of_means = pm.Deterministic('difference of means', group1_mean - group2_mean)
-    diff_of_stds = pm.Deterministic('difference of stds', group1_std - group2_std)
-    effect_size = pm.Deterministic('effect size',
-                                   diff_of_means / np.sqrt((group1_std**2 + group2_std**2) / 2))
-
-# Check Model Initialization
-model.check_test_point()
-# Model Graphs
-pm.model_to_graphviz(model)
-
-# pm.kdeplot(np.random.exponential(30, size=10000), fill_kwargs={'alpha': 0.5})
-
-with model:
-    # Prior
-    # prior = pm.sample_prior_predictive(500)
+    observations = pm.Binomial("observarions", N, observed_proportion, observed=X)
 
     # MCMC
-    step = pm.Metropolis()
+    step = pm.Metropolis(vars=[p])
+    trace = pm.sample(40000, step=step)
+    burned_trace = trace[15000:]
 
-    # Posterior
-    # start = pm.find_MAP()
-    trace = pm.sample(draws=20000, step=step, progressbar=True)
-    burned_trace = trace[10000:]
+# 시각화
+p_trace = burned_trace["freq_cheating"][15000:]
+plt.hist(p_trace, histtype="stepfilled", normed=True, alpha=0.85, bins=30,
+         label="posterior distribution", color="#348ABD")
+plt.vlines([.05, .35], [0, 0], [5, 5], alpha=0.3)
+plt.xlim(0, 1)
+plt.legend()
 
-pm.plot_posterior(burned_trace,
-                  var_names=['group1_mean','group2_mean', 'group1_std', 'group2_std', 'nu_minus_one'])
 
-pm.plot_posterior(trace, var_names=['difference of means','difference of stds', 'effect size'],
-                  ref_val=0, color='#87ceeb')
+# PyMC 대안 모델
 
-pm.summary(burned_trace, var_names=['group1_mean','group2_mean'])
-pm.summary(burned_trace, var_names=['difference of means','difference of stds', 'effect size'])
-trace_df = pm.trace_to_dataframe(burned_trace)
-mu_A_trace = trace_df["group1_mean"]
-mu_B_trace = trace_df["group2_mean"]
 
-def trace_hist(data, label, **kwargs):
-    return plt.hist(data, bins=40, histtype="stepfilled", alpha=.95, label=label, **kwargs)
-
-ax = plt.subplot(2, 1, 1)
-trace_hist(mu_A_trace, "A")
-trace_hist(mu_B_trace, "B")
-plt.legend ()
-plt.title("Posterior distributions of $\mu$")
 
 
